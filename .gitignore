@@ -45,9 +45,6 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
 
 # Testing
 .pytest_cache/
