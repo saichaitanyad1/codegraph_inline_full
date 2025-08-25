@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -25,4 +24,6 @@ class Query:
     neighbors: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
-        return {k: v for k, v in self.__dict__.items() if v not in (None, [], {})}
+        return {
+            k: v for k, v in self.__dict__.items() if v not in (None, [], {})
+        }
