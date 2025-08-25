@@ -1,0 +1,19 @@
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codegraph-inline"
+version = "0.1.0"
+description = "Inline code graph toolkit with multi-agent orchestrator"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "networkx>=3.0",
+  "javalang>=0.13.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["codegraph*", "inline_agentkit*"]
