@@ -1,18 +1,24 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict, Any, Optional
-from tree_sitter_languages import get_parser
+
+# Tree-sitter 0.25+ bindings
+import tree_sitter_java as tsjava
+from tree_sitter import Language, Parser
+
 from .graph_schema import Node, Edge, NodeType, EdgeType
 
 # ============================================================
 # Signature / runtime banner
 # ============================================================
-SIGNATURE = "java-parser-treesitter:ast-http-v2 (tree_sitter_languages)"
+SIGNATURE = "java-parser-treesitter:ast-http-v4 (ts 0.25+, direct tsjava.language)"
 print(f"[CodeGraph] Loaded {SIGNATURE}")
 
 # ============================================================
-# Parser (bundled grammar; no .so build required)
+# Language & Parser (single, supported path for 0.25+)
 # ============================================================
-_PARSER = get_parser("java")
+JAVA_LANGUAGE = Language(tsjava.language())
+_PARSER = Parser(JAVA_LANGUAGE)
+# _PARSER.set_language(JAVA_LANGUAGE)
 
 # ============================================================
 # HTTP mapping registry (centralized)
@@ -66,73 +72,120 @@ def _string_lit_to_py(s: str) -> str:
     return s
 
 def _elem_value_to_list(src: bytes, node) -> List[str]:
+    """
+    Collect string/identifier-ish values from an annotation element subtree.
+    Covers: string_literal, arrays, identifiers, field_access (e.g., RequestMethod.GET),
+    and walks through wrapper nodes like expression/conditional_expression/primary.
+    """
     t = node.type
+
+    # Direct string: "…"
     if t == "string_literal":
         return [_string_lit_to_py(_text(src, node))]
+
+    # Array initializer: { "a", "b" }
     if t == "element_value_array_initializer":
-        vals = []
+        vals: List[str] = []
         for ch in node.children:
-            if ch.type in ("string_literal", "character_literal", "decimal_integer_literal",
-                           "decimal_floating_point_literal", "true", "false", "null_literal",
-                           "field_access", "identifier", "scoped_identifier", "qualified_name", "element_value"):
-                vals.extend(_elem_value_to_list(src, ch))
+            vals.extend(_elem_value_to_list(src, ch))
         return _dedup(vals)
-    if t in ("character_literal", "decimal_integer_literal", "decimal_floating_point_literal",
-             "true", "false", "null_literal"):
+
+    # Literals/booleans (leave raw)
+    if t in (
+        "character_literal", "decimal_integer_literal", "decimal_floating_point_literal",
+        "true", "false", "null_literal"
+    ):
         return [_text(src, node)]
+
+    # Names/enums like RequestMethod.GET or identifiers
     if t in ("field_access", "identifier", "scoped_identifier", "qualified_name"):
         return [_text(src, node)]
-    if t == "element_value":
+
+    # Common wrappers we should just recurse through
+    if t in (
+        "element_value",
+        "conditional_expression",
+        "expression",
+        "primary",
+        "parenthesized_expression",
+        "argument_list",
+        "annotation_argument_list",
+        "element_value_pair_list",
+    ):
+        out: List[str] = []
         for ch in node.children:
-            return _elem_value_to_list(src, ch)
-        return []
-    return [_text(src, node)]
+            out.extend(_elem_value_to_list(src, ch))
+        return _dedup(out)
+
+    # Default: recurse into children; if nothing found, fall back to raw text
+    collected: List[str] = []
+    for ch in node.children:
+        collected.extend(_elem_value_to_list(src, ch))
+    return _dedup(collected) if collected else [_text(src, node)]
+
 
 def _parse_annotation_args(src: bytes, anno_node) -> Dict[str, Any]:
+    """
+    Produces a dict with:
+      - unnamed: value_list / value  (e.g., @GetMapping("/p"))
+      - keyed:   <key>_list / <key>  (e.g., @RequestMapping(path={"/a","/b"}, method=RequestMethod.GET))
+    Walks element_value_pair nodes and standalone element_value anywhere under the arg list.
+    """
     out: Dict[str, Any] = {}
+
+    # Locate the annotation argument list
     arg_list = None
     for ch in anno_node.children:
-        if ch.type == "annotation_argument_list":
+        if ch.type in ("annotation_argument_list", "argument_list"):
             arg_list = ch
             break
     if arg_list is None:
-        return out
+        return out  # marker annotation: no args
 
-    pairs = []
-    single_value_node: Optional[object] = None
-    for ch in arg_list.children:
-        if ch.type == "element_value_pair":
-            pairs.append(ch)
-        elif ch.type == "element_value":
-            single_value_node = ch
+    pair_nodes, single_values = [], []
 
-    if pairs:
-        for p in pairs:
-            key_node = None
-            val_node = None
-            seen_eq = False
+    # Deep walker: collect pair nodes and single element_value nodes
+    def _collect(n):
+        if n.type == "element_value_pair":
+            pair_nodes.append(n)
+        elif n.type == "element_value":
+            single_values.append(n)
+        # Recurse through everything (don’t miss nested wrappers)
+        for c in n.children:
+            _collect(c)
+
+    _collect(arg_list)
+
+    # Prefer pairs if present (NormalAnnotation semantics)
+    if pair_nodes:
+        for p in pair_nodes:
+            key_node, val_node, seen_eq = None, None, False
             for ch in p.children:
                 if not seen_eq and ch.type == "identifier":
                     key_node = ch
                 elif ch.type == "=":
                     seen_eq = True
-                elif seen_eq:
+                elif seen_eq and val_node is None:
                     val_node = ch
-                    break
-            if key_node is not None and val_node is not None:
-                k = _text(src, key_node)
-                vs = _elem_value_to_list(src, val_node)
-                out[f"{k}_list"] = vs
-                if vs:
-                    out[k] = vs[0] if len(vs) == 1 else ",".join(vs)
+            if key_node is None or val_node is None:
+                continue
+            k = _text(src, key_node)
+            vs = _elem_value_to_list(src, val_node)
+            out[f"{k}_list"] = vs
+            if vs:
+                out[k] = vs[0] if len(vs) == 1 else ",".join(vs)
         return out
 
-    if single_value_node is not None:
-        vs = _elem_value_to_list(src, single_value_node)
-        out["value_list"] = vs
-        if vs:
-            out["value"] = vs[0] if len(vs) == 1 else ",".join(vs)
+    # Otherwise: single unnamed value
+    vals: List[str] = []
+    for ev in single_values:
+        vals.extend(_elem_value_to_list(src, ev))
+    vals = _dedup(vals)
+    if vals:
+        out["value_list"] = vals
+        out["value"] = vals[0] if len(vals) == 1 else ",".join(vals)
     return out
+
 
 def _annotation_to_record(src: bytes, anno_node) -> Dict[str, Any]:
     name_ident_parts: List[str] = []

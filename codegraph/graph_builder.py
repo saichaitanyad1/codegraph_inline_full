@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os, io
 from .graph_schema import CodeGraph, Node, Edge, NodeType, EdgeType
-from .java_parser import parse_java_source
+from .java_parser_treesitter import parse_java_source_ts
 from .python_parser import parse_python_source
 from .resolver_java import resolve_calls as resolve_calls_java
 
@@ -16,7 +16,7 @@ def build_graph_from_repo(repo_path: str, lang: str = "auto") -> CodeGraph:
                 try:
                     with io.open(path, "r", encoding="utf-8", errors="ignore") as f:
                         src = f.read()
-                    nodes, edges = parse_java_source(src, path)
+                    nodes, edges = parse_java_source_ts(src, path)
                     for n in nodes: G.add_node(n)
                     for e in edges: G.add_edge(e)
                 except Exception as e:
